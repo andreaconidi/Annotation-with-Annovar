@@ -1,0 +1,601 @@
+---
+title: "VCF files annotation with Annovar and output handling in R"
+author: "Andrea Conidi"
+format: html
+execute: 
+  eval: false
+editor: visual
+---
+
+------------------------------------------------------------------------
+
+# Chapter 1: Annotation with Annovar
+
+## Install Annovar
+
+See <https://annovar.openbioinformatics.org/en/latest/> for the latest version of Annovar.
+
+Register and after receiving the link the Annovar package can be downloaded.
+
+Be sure to have also PERL installed.
+
+From the command line
+
+```{bash}
+tar -xvzf annovar.latest.tar.gz
+```
+
+Annovar package will show up as a folder `annovar` and it will contains at least these files and folders:
+
+```{bash}
+annotate_variation.pl
+coding_change.pl
+convert2annovar.pl
+example
+humandb
+retrieve_seq_from_fasta.pl
+table_annovar.pl
+variants_reduction.pl
+```
+
+## Installing addtional databases
+
+The `humandb` folder it stores all the preprocessed databases of interest so ANNOVAR knows how to annotate the variants based on the annotation we required. We need to download appropriate database files using annotate_variation.pl. Before download, we need to decide which databases to use: - genome build (e.g., hg19 or hg38) - annotation (e.g., gnomad or clinvar) - version (e.g. clinvar_20240917 or clinvar_20240611)P. All available database for ANNOVAR can be found at the [ANNOVAR additional database page](https://annovar.openbioinformatics.org/en/latest/user-guide/download/#additional-databases). 
+
+To download additional databases
+
+```{bash}
+annotate_variation.pl -buildver hg19 -downdb -webfrom annovar refGene humandb/
+```
+
+Recommended databases:
+
+RefGene (see above)
+
+Gnomad 2.11 (hg19) /Gnomad 4.1 (hg38)
+
+CADD13
+
+PopFreqMax (hg19) not available for hg38
+
+SIFT
+
+Polyphen
+
+```{bash}
+perl annotate_variation.pl -buildver hg19 -downdb -webfrom annovar gnomad211_exome humandb/
+  
+perl annotate_variation.pl -buildver hg19 -downdb -webfrom annovar popfreqmax_20150413 humandb/
+
+perl annotate_variation.pl -buildver hg19 -downdb -webfrom annovar cadd13 humandb/
+
+perl annotate_variation.pl -buildver hg19 -downdb -webfrom annovar ljb26_sift humandb/
+
+perl annotate_variation.pl -buildver hg19 -downdb -webfrom annovar ljb26_pp2 humandb/
+
+perl annotate_variation.pl -buildver hg19 -downdb -webfrom annovar ljb26_pp2hvar humandb/
+
+perl annotate_variation.pl -buildver hg19 -downdb -webfrom annovar ljb26_pp2hdiv humandb/
+```
+
+## Run Annovar on a single VCF
+
+From the command line
+
+```{bash}
+perl table_annovar.pl "$vcf_file" humandb/ \
+        -buildver hg19 \
+        -out output_file \
+        -remove \
+        -protocol refGene,gnomad211_exome,popfreq_max_20150413,cadd13,ljb26_sift,ljb26_pp2hvar,ljb26_pp2hdiv \
+        -operation g,f,f,f,f,f,f \
+        -nastring . \
+        -vcfinput \
+        -intronhgvs 100
+```
+
+## Run Annovar on multiple VCF files in a recursive manner and with backlog 
+
+The following bash code checks the total number of vcf files across a series of subfolders, performs the annovar annotation, save the annotated files as `.txt` with the same prefix of the original input in a `annotated_results` folder, and provides a `.log` file with any possible errors encountered.
+
+```{bash}
+#!/bin/bash
+
+# Configuration
+BASE_DIR="MAIN FOLDER" #replace folder name
+LOG_FILE="annotation_$(date +%Y%m%d_%H%M%S).log"
+ERROR_COUNT=0
+SUCCESS_COUNT=0
+TOTAL_FILES=0
+
+# Create output directory for organized results
+mkdir -p annotated_results
+
+echo "Starting batch annotation at $(date)" | tee "$LOG_FILE"
+echo "Searching for .vcf files in: $BASE_DIR" | tee -a "$LOG_FILE"
+
+# Count total files first
+TOTAL_FILES=$(find "$BASE_DIR" -name "*.vcf*" -type f | wc -l) #*.vcf* allows to read both vcf and vcf.gz files
+echo "Found $TOTAL_FILES .vcf files to process" | tee -a "$LOG_FILE"
+echo "----------------------------------------" | tee -a "$LOG_FILE"
+
+# Process files recursively
+find "$BASE_DIR" -name "*.vcf*" -type f | while read -r vcf_file; do
+    if [[ -f "$vcf_file" ]]; then
+        prefix=$(basename "$vcf_file" .vcf*)
+        relative_path=$(dirname "$vcf_file" | sed "s|$BASE_DIR||" | sed 's|^/||')
+        
+        echo "Processing: $vcf_file" | tee -a "$LOG_FILE"
+        echo "  -> Output prefix: annotated_results/$prefix" | tee -a "$LOG_FILE"
+        echo "  -> Source path: $relative_path" | tee -a "$LOG_FILE"
+        
+        # Run ANNOVAR with error capture
+        if perl table_annovar.pl "$vcf_file" humandb/ \
+        -buildver hg19 \
+        -out "annotated_results/$prefix" \
+        -remove \
+        -protocol refGene,gnomad211_exome,popfreq_max_20150413,cadd13,ljb26_sift,ljb26_pp2hvar,ljb26_pp2hdiv \
+        -operation g,f,f,f,f,f,f \
+        -nastring . \
+        -vcfinput \
+        -intronhgvs 100 2>> "$LOG_FILE"; then
+            echo "  ✓ SUCCESS: $vcf_file" | tee -a "$LOG_FILE"
+            ((SUCCESS_COUNT++))
+        else
+            echo "  ✗ ERROR: Failed to process $vcf_file" | tee -a "$LOG_FILE"
+            ((ERROR_COUNT++))
+        fi
+        echo "  Progress: $((SUCCESS_COUNT + ERROR_COUNT))/$TOTAL_FILES completed" | tee -a "$LOG_FILE"
+        echo "----------------------------------------" | tee -a "$LOG_FILE"
+    fi
+done
+
+echo "" | tee -a "$LOG_FILE"
+echo "Batch annotation completed at $(date)" | tee -a "$LOG_FILE"
+echo "========================================" | tee -a "$LOG_FILE"
+echo "FINAL SUMMARY:" | tee -a "$LOG_FILE"
+echo "  Total files found: $TOTAL_FILES" | tee -a "$LOG_FILE"
+echo "  Successfully processed: $SUCCESS_COUNT" | tee -a "$LOG_FILE"
+echo "  Failed: $ERROR_COUNT" | tee -a "$LOG_FILE"
+echo "  Success rate: $(( (SUCCESS_COUNT * 100) / (SUCCESS_COUNT + ERROR_COUNT) ))%" | tee -a "$LOG_FILE"
+echo "========================================" | tee -a "$LOG_FILE"
+
+# List output files
+echo "" | tee -a "$LOG_FILE"
+echo "Generated output files:" | tee -a "$LOG_FILE"
+ls -la annotated_results/ | tee -a "$LOG_FILE"
+
+if [[ $ERROR_COUNT -gt 0 ]]; then
+    echo "⚠️  Warning: $ERROR_COUNT files failed to process. Check the log file: $LOG_FILE"
+    exit 1
+else
+    echo "🎉 All files processed successfully!"
+    exit 0
+fi
+
+```
+
+save the above script as a .sh file (batch_annotation.sh) , then:
+
+```{bash}
+chmod +x batch_annotation.sh
+```
+
+To run the script:
+
+```{bash}
+./batch_annotation.sh
+```
+
+## Extra step: add a column to the obtained `.txt` files with the filename
+
+This step is optional, but strongly advised if the files are further filtered using `Python`/`R`. The following code will add an extra column `filename` to the obtained vcf with the name of the file. If combined with a samplesheet file which contains the filenames of the vcf and other data (storage location, clinical data, database, case/control values, ...), facilitates the handling of the annotated files.
+
+```{bash}
+#!/bin/bash
+
+for file in *.txt; do
+tmpfile=$(mktemp)
+header=$(head -n 1 "$file")
+echo -e "$header\tfilename" > "$tmpfile"
+tail -n +2 "$file" | awk -v fname="$file" '{print $0 "\t" fname}' >> "$tmpfile"
+mv "$tmpfile" "$file"
+done
+
+```
+
+Save the above as `add_filename.sh`.
+
+```{bash}
+chmod +x add_filename.sh
+```
+
+then:
+
+```{bash}
+./add_filename.sh
+```
+
+\
+
+------------------------------------------------------------------------
+
+# Chapter 2: Handling annotated files with R
+
+## Data Preparation:
+
+It is highly recommended to use a samplesheet.txt file that contains the filenames of all the annotated txt files and other informations as patient_id, clinical data, case/ctrl, diagnosis, and so on.
+
+The samplesheet I made is organized as follows:
+
+`drive` \| `folder` \| `database` \| `vcf_filename` \| `patient_id` \| `basename` \| clinical_data
+
+Please note that `vcf_filename` corresponds to the filename of the original vcf, while `basename` to the annotated txt file.
+
+The following code loads all the annotaed txt files as a list in the GlobEnv, and then assign to each element of the list the corresponding values in the samplesheet.
+
+```{r}
+# load libraries
+library(tidyverse)
+
+# assign wpath
+wpath <- "LOCATION OF ANNOTATED VCF"
+
+# list txt files in a recursive manner
+files <- list.files(
+  path = wpath,
+  pattern = "\\.hg19_multianno.txt$",
+  full.names = T,
+  recursive = T
+)
+
+# read samplesheet
+samplesheet <- read.delim("SAMPLESHEET.txt")
+
+# fucntion to read annotated vcf
+read_multianno <- function(file) {
+  df <- read.delim(file)
+   return(df)
+}
+
+# load annotated files to data_list 
+data_list <- imap(files, ~read_multianno(.x))  
+
+#reduce number of columns (depends on the databases used)
+data_list <- map(data_list, function(df){
+  df <- df[,c(1:12,16:23, 27, 28,30, 32,34,36,42, 46, 49,50)]
+  return(df)
+})  
+
+# combine samplesheet information to the specific element of the list
+data_list <- map(data_list, function(df) {
+  df <- df %>% 
+    left_join(samplesheet, by = c("filename" = "basename"))
+  return(df)
+})
+
+# assign names to elements of the list
+names(data_list) <- map(data_list, ~ unique(paste0(.x$patient_id, "_", .x$database)))
+
+# extract ncRNA and other regulatory regions (UTRs)
+ncRNA_list <- map(data_list, function(df) {
+  df <- df %>%
+    filter(grepl("ncRNA_", Variant_location))
+  
+  return(df)
+})
+
+UTR_list <- map(data_list, function(df) {
+  df <- df %>%
+    filter(
+      Variant_location %in% c(
+        "UTR3",
+        "UTR5",
+        "UTR5;UTR3",
+        "downstream",
+        "upstream",
+        "upstream;downstream"
+      )
+    )
+  
+  return(df)
+})
+
+save(ncRNA_list, UTR_list, file = "Y:/annotated_vcf/WES_regulatory.RData")
+
+
+# wrangling of the data
+
+# define columns to keep
+col_to_keep <- c(
+  "Chr",
+  #1
+  "Start",
+  #2
+  "End",
+  #3
+  "Ref" ,
+  #4
+  "Alt"  ,
+  #5
+  "Func.refGene",
+  #6
+  "Gene.refGene" ,
+  #7
+  "GeneDetail.refGene",
+  #8
+  "ExonicFunc.refGene" ,
+  #9
+  "AAChange.refGene",
+  #10
+  "AF",
+  #11
+  "AF_popmax" ,
+  #12
+  "AF_afr",
+  #13
+  "AF_sas",
+  #14
+  "AF_amr",
+  #15
+  "AF_eas",
+  #16
+  "AF_nfe",
+  #17
+  "AF_fin",
+  #18
+  "AF_asj",
+  #19
+  "AF_oth",
+  #20
+  "controls_AF_popmax",
+  #21
+  "PopFreqMax",
+  #22
+  "CADD13_PHRED",
+  #23
+  "SIFT_pred",
+  #24
+  "Polyphen2_HVAR_pred",
+  #25
+  "Polyphen2_HDIV_pred" ,
+  #26
+  "Otherinfo6" ,
+  #dbSNP #27
+  "Otherinfo10" ,
+  #quality pass #28
+  "Otherinfo13" ,
+  #GT:AD:DP:GQ:PL #29,
+  "filename",
+  #30
+  "database",
+  #31
+  "patient_id" 
+  #32
+)
+
+#function to keep the selected columns and rename them
+rename_columns <- function(df) {
+  df %>%
+    select(any_of(col_to_keep)) %>%
+    rename_with(
+      ~ c(
+        "Chr",
+        #1
+        "Start",
+        #2
+        "End",
+        #3
+        "Ref" ,
+        #4
+        "Alt"  ,
+        #5
+        "Variant_location",
+        #6
+        "Symbol" ,
+        #7
+        "HGVS",
+        #8
+        "Variant_type" ,
+        #9
+        "Transcript",
+        #10
+        "Gnomad_AF",
+        #11
+        "Gnomad_AF_GenPop" ,
+        #12
+        "Gnomad_AF_AFR",
+        #13
+        "Gnomad_AF_SAS",
+        #14
+        "Gnomad_AF_AMR" ,
+        #15
+        "Gnomad_AF_EAS" ,
+        #16
+        "Gnomad_AF_NFE" ,
+        #17
+        "Gnomad_AF_FIN" ,
+        #18
+        "Gnomad_AF_ASJ" ,
+        #19
+        "Gnomad_AF_OTH",
+        #20
+        "Controls_AF_popmax",
+        #21
+        "PopFreqMax",
+        #22
+        "CADD13_PHRED",
+        #23
+        "SIFT_pred",
+        #24
+        "Polyphen2_HVAR_pred" ,
+        #25
+        "Polyphen2_HDIV_pred" ,
+        #26
+        "dbSNP" ,
+        #27
+        "Qual_PASS" ,
+        #28
+        "INFO" ,
+        #GT:AD:DP:GQ:PL #29
+        "filename",
+        #30
+        "Database",
+        #31
+        "Patient_id" 
+        #32
+      )
+    )
+}
+
+#filter variants based on function/effect
+
+filter_variants <- function(df) {
+  df %>%
+    filter(
+      !Variant_location %in% c(
+        "intergenic",
+        "intron",
+        "intronic",
+        "ncRNA_exonic;splicing",
+        "ncRNA_intronic",
+        "ncRNA_splicing",
+        "ncRNA_exonic",
+        "UTR3",
+        "UTR5",
+        "UTR5;UTR3",
+        "downstream",
+        "upstream",
+        "upstream;downstream"
+      )
+    ) %>%
+    filter(!(Variant_location == "exonic" & 
+               Variant_type == "synonymous SNV"))
+  
+}
+
+
+#extract Zygosity & DP
+
+GT_DP <- function(df) {
+  df %>% 
+    mutate(INFO = as.character(INFO)) %>%
+    separate(INFO, into = c("GT", "AD", "DP", "GQ", "PL"), sep = ":") %>%
+    mutate( Zygosity = case_when(
+      GT == "0/1" ~ "het",
+      GT == "1/1" ~ "hom",
+      TRUE ~ "other"
+    )) 
+  
+}
+
+#extract cNomen and pNomen
+change_eff <- function(df) {
+  df %>%
+    mutate(
+      cNomen = str_extract(str_extract(Transcript, "^[^,]+"), "c\\.[^:]+"),
+      pNomen = str_extract(str_extract(Transcript, "^[^,]+"), "p\\.[^:]+")
+    )
+}
+
+# pass as.numeric to numerical columns
+# Define the columns to convert
+cols_to_convert <- c(
+  "Gnomad_AF",
+  "Gnomad_AF_GenPop" ,
+  "Gnomad_AF_AFR",
+  "Gnomad_AF_SAS",
+  "Gnomad_AF_AMR" ,
+  "Gnomad_AF_EAS" ,
+  "Gnomad_AF_NFE" ,
+  "Gnomad_AF_FIN" ,
+  "Gnomad_AF_ASJ" ,
+  "Gnomad_AF_OTH",
+  "PopFreqMax",
+  "Controls_AF_popmax",
+  "CADD13_PHRED"
+)
+
+#apply filters
+
+data_list <- map(data_list, rename_columns)
+data_list <- map(data_list, filter_variants)
+data_list <- map(data_list, GT_DP)
+data_list <- map(data_list, change_eff)
+
+
+#apply conversion across the list
+data_list <- lapply(data_list, function(df) {
+  df[cols_to_convert] <- lapply(df[cols_to_convert], as.numeric)
+  return(df)
+})
+
+
+
+#adjust columns (keep important ones and discard non relevant)
+
+arr_col <- c(
+  "Patient_id", #1
+  "Database",  #2
+  "Chr", #3
+  "Start", #4
+  "End", #5
+  "Ref", #6
+  "Alt", #7
+  "Zygosity", #8
+  "Variant_type", #9
+  "Variant_location", #10
+  "dbSNP", #11
+  "Symbol", #12
+  "cNomen", #13
+  "pNomen", #14
+  "HGVS",
+  "Transcript", #15
+  "Gnomad_AF", #16
+  "Gnomad_AF_GenPop", #17
+  "Controls_AF_popmax", #18
+  "PopFreqMax", #19
+  "CADD13_PHRED", #20
+  "SIFT_pred", #21
+  "Polyphen2_HVAR_pred", #22
+  "Polyphen2_HDIV_pred", #23
+  "Gnomad_AF_AFR", #24
+  "Gnomad_AF_SAS", #25
+  "Gnomad_AF_AMR" , #26
+  "Gnomad_AF_EAS" , #27
+  "Gnomad_AF_NFE" , #28
+  "Gnomad_AF_FIN" , #29
+  "Gnomad_AF_ASJ" , #30
+  "Gnomad_AF_OTH", #31
+  "Qual_PASS",  #32
+  "DP",  #33
+  "filename"  #34
+)
+
+
+arrange_columns <- function(df) {
+  df %>%
+    select(any_of(arr_col))
+}
+
+data_list <- map(data_list, arrange_columns)
+
+
+save(data_list, file = "WES.RData")
+
+
+
+#filter freq
+AF_freq <- 0.001
+
+filter_freq <- function(df) {
+  df %>%
+    filter(is.na(Gnomad_AF) | Gnomad_AF <= AF_freq)
+}
+
+data_list <- map(data_list, filter_freq)
+
+
+
+save(data_list, file = "WES_filtered.RData")
+```
